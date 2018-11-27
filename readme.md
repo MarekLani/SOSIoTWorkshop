@@ -30,7 +30,7 @@ To  complete the challenge, you will need to take following steps:
 
    After registering your device successfully, you now should see the device within [monitoring webpage](https://soselectronic.azurewebsites.net/deviceexplorer).
 
-3. In third step you will need to alter application settings. To do so, open project you have cloned from github and navigate to appSettings.json file. Here you should alter value for "IoTHubConnectionString" field. Please provide device connection string received as a response in previous step. Your appSettings.json file should now look like this: 
+3. In third step you will need to alter application settings. To do so, open *FileReaderApp* project you have cloned from github and navigate to appSettings.json file. Here you should alter value for "IoTHubConnectionString" field. Please provide device connection string received as a response in previous step. Your appSettings.json file should now look like this: 
 
    ```json
    {
@@ -41,7 +41,7 @@ To  complete the challenge, you will need to take following steps:
    }
    ```
 
-4. Start the application. Now your simulated devices started to send data to IoT Hub. It generates message every ten seconds and you can see their content being output to console window. Within monitoring webpage you should now already see the latest message that has been delivered to IoTHub.
+4. Start the application. Now your simulated devices started to send data to IoT Hub. It generates message every ten seconds and you can see their content being output to console window. Within monitoring webpage you should now already see the latest message that has been delivered to IoTHub from your device.
 
 
 
@@ -94,15 +94,104 @@ What happens on backend is, that cloud infrastructure detects alert condition, m
 
 If you are interested in code for backend infrastructure, it can be found in [this repo](https://github.com/MarekLani/AzureIoTHubSignalRExplorer).
 
-## **3. Reading and sending real sensor data**
+## **3. Responding to Alert Messages**
 
-In this challenge we will alter our existing application and prepare it for deployment onto AAEON single-board computer, so it collects and sends data from real sensors. This challenge consists of three parts: Setting up the real device and preparing it for data collection, altering of code of our application to read and resend real sensor data and deployment of application to AAEON device. 
-
-### Setting up the real device
-
-We will read data using Sensirion SGP sensor (capable to measure total volatile organic compounds in air and CO2 levels) and SHT sensor (capable to measure humidity and temperature). These sensors should be connected to SEK Sensor Bridge, which collects data from sensors and forwards those thru USB cable to AAEON computer. Physical setup should look like this:
+In this challenge we will already work with the AAEON device. Your AAEON setup should look something like this: 
 
 ![Sensirion setup](Images/sensirionsetup.png)
+
+In this part we will still use simulated randomly generated sensor values, but we will alter *SetAlarm* method to work with connected lightbulb warning light and deploy the application to AAEON device. We will utilize capabilities to control external hardware connected to our AAEON device. In our case it will be light bulb and relay connected to DIO port. This relay is connected to pin number 0 respectively 2 (depends on device used).
+
+![GPIO DIOD Mount](C:/Users/mlani/Develop/SoSElectronics/Workshop/Images/lightbulb.jpg)
+
+To switch the light on in case alert message is received from IoT Hub, we will make use of aaeonEAPI SDK, which was already attached to the application code. This SDK will help us to send signal to specific GPIO PIN of DIO port. As this library is written in C++, we will need to use DLL Import instructs to make use of SDK in C# environment. We will also use status codes defined in EAPI.cs file.
+
+First include following DLL Imports and variables right in the beginning of Program class:
+
+```c#
+public UInt32 nPinCount = 0;
+public static int groupSelected = 1;
+public UInt32 bDioDisable = 0;
+
+[DllImport("aaeonEAPI.dll", EntryPoint = "EApiGPIOSetDirection")]
+public static extern UInt32 EApiGPIOSetDirection(UInt32 Id, UInt32 Bitmask, UInt32 Direction);
+
+[DllImport("aaeonEAPI.dll", EntryPoint = "EApiGPIOSetLevel")]
+public static extern UInt32 EApiGPIOSetLevel(UInt32 Id, UInt32 Bitmask, UInt32 Level);
+
+[DllImport("aaeonEAPI.dll", EntryPoint = "EApiLibInitialize")]
+public static extern UInt32 EApiLibInitialize();
+
+[DllImport("aaeonEAPI.dll", EntryPoint = "EApiLibUnInitialize")]
+public static extern UInt32 EApiLibUnInitialize();
+```
+
+Now we will add helper method to Program class, thanks to which we will be able to control values on GPIO pins:
+
+```C#
+/// <summary>
+/// Sets value on GPIO PIN
+/// </summary>
+/// <param name="dPin">number of pin</param>
+/// <param name="nInput">iput/output  1/0</param>
+/// <param name="nHigh">on/off 1/0</param>
+public static void SetDioPinState(UInt32 dPin, UInt32 nInput, UInt32 nHigh)
+{
+    UInt32 err1 = EAPI.EAPI_STATUS_SUCCESS;
+    UInt32 err2 = EAPI.EAPI_STATUS_SUCCESS;
+
+    err1 = EApiGPIOSetDirection(EAPI.EAPI_GPIO_GPIO_ID((UInt32)(dPin + (8 * (groupSelected - 1)))), 0xFFFFFFFF, nInput);
+    err2 = EApiGPIOSetLevel(EAPI.EAPI_GPIO_GPIO_ID((UInt32)(dPin + (8 * (groupSelected - 1)))), 0xFFFFFFFF, nHigh);
+
+    if (err1 != EAPI.EAPI_STATUS_SUCCESS || err2 != EAPI.EAPI_STATUS_SUCCESS)
+    {
+        if (err1 == EAPI.EAPI_STATUS_DEVICE_NOT_READY || err2 == EAPI.EAPI_STATUS_DEVICE_NOT_READY)
+        {
+            Console.WriteLine( "Can't set DIO" + (dPin + 1 + (8 * (groupSelected - 1))).ToString() + " value:\nHardware not ready. Please check BIOS setting.");
+        }
+        else
+        {
+            Console.WriteLine("Can't set DIO value.");
+        }
+    }
+}
+```
+
+Last thing we need to do is uncomment both SetDioPinState lines in StartAlarm method of Program class. It should now look like this:
+
+```c#
+private static Task<MethodResponse> StartAlarm(MethodRequest methodRequest, object userContext)
+{
+    dynamic jsonObject = JsonConvert.DeserializeObject(methodRequest.DataAsJson);
+    Console.WriteLine("ALARM CO2 :"+ (string)jsonObject.CO2);
+
+    // Initiate alar for 5 seconds
+    Task.Run(async () =>
+             {
+                 SetDioPinState(0, 0, 1);
+                 Console.WriteLine("Alarm START");
+                 await Task.Delay(5000);
+                 Console.WriteLine("Alarm STOP");
+                 SetDioPinState(0, 0, 0);
+
+             });
+
+
+    //respond to IoT Hub
+    string result = "{\"result\":\"Executed direct method: " + methodRequest.Name + "\"}";
+    return Task.FromResult(new MethodResponse(Encoding.UTF8.GetBytes(result), 200));
+}
+```
+
+### Deploying application to AAEON device
+
+To be able to run our application on the AAEON device, please build it in Release configuration (for x64 architecture). Now navigate to directory, where the projects was built. It should be in following directory: *Path_To_Project\SensorDataSender\bin\x64\Release* . Please copy this Release folder and paste in thru RDP connection to your AAEON device (for example onto Desktop). This will initiate upload of files to your device. Now you can start sensor data collection using Control Center. Simply click Start button. Once SensorDataSender application was copied to AAEON device, please open the folder, locate and run SensorDataSender.exe file. Now when you navigate to https://soselectronic.azurewebsites.net/deviceexplorer you should see messages and values coming from real sensors.
+
+Now as a next steps, we will move from device side to backend part and we will try to implement Azure backend, so our solution is not dependent on existing pre-build infrastructure.
+
+## 4. Reading and sending real sensor data
+
+To read and send real sensor data from our AAEON device to cloud we need to alter code of our application again.
 
 In order to make the collection of sensor data work, we need to use Sensirion's Control Center, which provides necessary software layer, so our single board computer is capable to communicate with sensor bridge and thus receive messages. Before we will proceed to alter the application we will need to connect to our single board computer and change path where the sensor data will be collected. To do so, please connect to your device using Remote Desktop Connection. You should have been given login information, including IP address of your device, login name and password. After connecting to your device please open the Sensirion Control Center, which should already be installed on your device, go to *File -> Settings* and change the Output Directory path to C:\User\<useraccountonyourdevice>\data_logging. Store  this path as we will need it later when altering our application. Do not start the data collection yet. 
 
@@ -245,102 +334,9 @@ public static DateTime UnixTimeStampToDateTime(double unixTimeStamp)
 }
 ```
 
-### Deploying application to AAEON device
-
-To be able to run our application on the AAEON device, please build it in Release configuration (for x64 architecture). Now navigate to directory, where the projects was built. It should be in following directory: *Path_To_Project\SensorDataSender\bin\x64\Release* . Please copy this Release folder and paste in thru RDP connection to your AAEON device (for example onto Desktop). This will initiate upload of files to your device. Now you can start sensor data collection using Control Center. Simply click Start button. Once SensorDataSender application was copied to AAEON device, please open the folder, locate and run SensorDataSender.exe file. Now when you navigate to https://soselectronic.azurewebsites.net/deviceexplorer you should see messages and values coming from real sensors.
-
-## 4. Responding to Alert messages
-
-In this section we will slightly change behavior of our application in case of invocation of SetAlarm method thru IoT Hub direct method call capability. We will utilize capabilities to control external hardware connected to our AAEON device. In our case it will be LED DIOD. You should have your own diod connected to resistor and to DIO port connector, while diod is connected to GPIO PIN number 1. Connection to second PIN is used as grounding. 
-
-![GPIO DIOD Mount](Images/diod.png)
-
-Please mount DIO connector to DIO port on your AAEON device
-
-Now we may alter the application to flash the diod in case of alert condition. We will make use of aaeonEAPI SDK, which was already attached to the application code. This SDK will help us to send signal to specific GPIO PIN of DIO port. As it is written in C++, we will need to use DLL Import instructs to make use of SDK in C# environment. We will also use status codes defined in EAPI.cs file.
-
-First include following DLL Imports and variables right in the beginning of Program class:
-
-```c#
-public UInt32 nPinCount = 0;
-public static int groupSelected = 1;
-public UInt32 bDioDisable = 0;
-
-[DllImport("aaeonEAPI.dll", EntryPoint = "EApiGPIOSetDirection")]
-public static extern UInt32 EApiGPIOSetDirection(UInt32 Id, UInt32 Bitmask, UInt32 Direction);
-
-[DllImport("aaeonEAPI.dll", EntryPoint = "EApiGPIOSetLevel")]
-public static extern UInt32 EApiGPIOSetLevel(UInt32 Id, UInt32 Bitmask, UInt32 Level);
-
-[DllImport("aaeonEAPI.dll", EntryPoint = "EApiLibInitialize")]
-public static extern UInt32 EApiLibInitialize();
-
-[DllImport("aaeonEAPI.dll", EntryPoint = "EApiLibUnInitialize")]
-public static extern UInt32 EApiLibUnInitialize();
-```
-
-Now we will add helper method to Program class, thanks to which we will be able to control values on GPIO pins:
-
-```C#
-/// <summary>
-/// Sets value on GPIO PIN
-/// </summary>
-/// <param name="dPin">number of pin</param>
-/// <param name="nInput">iput/output  1/0</param>
-/// <param name="nHigh">on/off 1/0</param>
-public static void SetDioPinState(UInt32 dPin, UInt32 nInput, UInt32 nHigh)
-{
-    UInt32 err1 = EAPI.EAPI_STATUS_SUCCESS;
-    UInt32 err2 = EAPI.EAPI_STATUS_SUCCESS;
-
-    err1 = EApiGPIOSetDirection(EAPI.EAPI_GPIO_GPIO_ID((UInt32)(dPin + (8 * (groupSelected - 1)))), 0xFFFFFFFF, nInput);
-    err2 = EApiGPIOSetLevel(EAPI.EAPI_GPIO_GPIO_ID((UInt32)(dPin + (8 * (groupSelected - 1)))), 0xFFFFFFFF, nHigh);
-
-    if (err1 != EAPI.EAPI_STATUS_SUCCESS || err2 != EAPI.EAPI_STATUS_SUCCESS)
-    {
-        if (err1 == EAPI.EAPI_STATUS_DEVICE_NOT_READY || err2 == EAPI.EAPI_STATUS_DEVICE_NOT_READY)
-        {
-            Console.WriteLine( "Can't set DIO" + (dPin + 1 + (8 * (groupSelected - 1))).ToString() + " value:\nHardware not ready. Please check BIOS setting.");
-        }
-        else
-        {
-            Console.WriteLine("Can't set DIO value.");
-        }
-    }
-}
-```
-
-Last thing we need to do is uncomment both SetDioPinState lines in StartAlarm method of Program class. It should now look like this:
-
-```c#
-private static Task<MethodResponse> StartAlarm(MethodRequest methodRequest, object userContext)
-{
-    dynamic jsonObject = JsonConvert.DeserializeObject(methodRequest.DataAsJson);
-    Console.WriteLine("ALARM CO2 :"+ (string)jsonObject.CO2);
-
-    // Initiate alar for 5 seconds
-    Task.Run(async () =>
-             {
-                 SetDioPinState(0, 0, 1);
-                 Console.WriteLine("Alarm START");
-                 await Task.Delay(5000);
-                 Console.WriteLine("Alarm STOP");
-                 SetDioPinState(0, 0, 0);
-
-             });
-
-
-    //respond to IoT Hub
-    string result = "{\"result\":\"Executed direct method: " + methodRequest.Name + "\"}";
-    return Task.FromResult(new MethodResponse(Encoding.UTF8.GetBytes(result), 200));
-}
-```
-
 As a last step repeat deployment process. Rebuild your solution for release configuration and copy files to your AAEON device. 
 
 Now, start collecting sensor data thru Sensirion Control Center and you start Sensor Data Sender application. When you start breathing on your CO2 sensor to increase CO2 level, you should see led diod flashing from time to time, because cloud infrastructure evaluates increased CO2 levels as an alert event. 
-
-Now as a next steps, we will move from device side to backend part and we will try to implement Azure backend, so our solution is not dependent on existing pre-build infrastructure.
 
 ## 5. Building Azure backend
 
