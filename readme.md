@@ -102,7 +102,7 @@ In this challenge we will already work with the AAEON device. Your AAEON setup s
 
 In this part we will still use simulated randomly generated sensor values, but we will alter *SetAlarm* method to work with connected lightbulb warning light and deploy the application to AAEON device. We will utilize capabilities to control external hardware connected to our AAEON device. In our case it will be light bulb and relay connected to DIO port. This relay is connected to pin number 0 respectively 2 (depends on device used).
 
-![GPIO DIOD Mount](C:/Users/mlani/Develop/SoSElectronics/Workshop/Images/lightbulb.jpg)
+![GPIO DIOD Mount](Images/lightbulb.jpg)
 
 To switch the light on in case alert message is received from IoT Hub, we will make use of aaeonEAPI SDK, which was already attached to the application code. This SDK will help us to send signal to specific GPIO PIN of DIO port. As this library is written in C++, we will need to use DLL Import instructs to make use of SDK in C# environment. We will also use status codes defined in EAPI.cs file.
 
